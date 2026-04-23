@@ -15,7 +15,7 @@
 | clang-tidy | **可用** (LLVM 22.1.3) | Bash: `clang-tidy -p compile_commands.json` | C/C++ |
 | grepai CLI | **不适用** | 仅支持 TypeScript/TSX，PG 分析使用 ast_grep + Grep 替代 | — |
 | LSP (clangd) | **未安装** | 降级到 Grep + Read | — |
-| **DeepWiki MCP** | **可用** | `mcp__deepwiki__deepwiki_fetch` — 仓库: `swrd/pg14` | 通用 |
+| **DeepWiki MCP** | **可用（官方）** | `mcp__deepwiki__ask_question` 问答 + `read_wiki_structure` 索引 + `read_wiki_contents` 内容 | 通用 |
 | **Context7 MCP** | **可用** | `mcp__context7__resolve-library-id` + `mcp__context7__query-docs` | 通用 |
 
 ## 场景→工具映射
@@ -73,8 +73,8 @@
 | 场景 | 首选工具 | 说明 | 降级方案 |
 |------|---------|------|---------|
 | PG 官方文档查询 | `Grep` in `doc/src/sgml/` | 本地 SGML 文档是权威来源 | — |
-| 交叉验证结论 | `DeepWiki MCP` | `mcp__deepwiki__deepwiki_fetch(url="swrd/pg14")` | 跳过验证 |
-| 获取高层架构概述 | `DeepWiki MCP` | `mcp__deepwiki__deepwiki_fetch(url="swrd/pg14", maxDepth=1)` | 读取本地 README |
+| 交叉验证结论 | `DeepWiki MCP` | `mcp__deepwiki__ask_question(repoName="swrd/pg14", question="...")` | 跳过验证 |
+| 获取高层架构概述 | `DeepWiki MCP` | `mcp__deepwiki__ask_question(repoName="swrd/pg14", question="...")` | 读取本地 README |
 | 补充设计意图说明 | `DeepWiki MCP` | 查询特定主题页面 | 基于 README 和注释推断 |
 | 外部库文档查询 | `Context7 MCP` | 用于查询非 PG 的外部依赖库文档 | Web 搜索 |
 
