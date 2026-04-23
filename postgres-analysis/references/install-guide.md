@@ -15,15 +15,19 @@ omc setup
 
 ### 2. DeepWiki MCP（必需）
 
-提供仓库知识查询，用于交叉验证分析结论。
+提供仓库知识查询，用于交叉验证分析结论。使用官方远程 MCP server，提供 3 个工具：
+- `ask_question` — 精准 AI 问答（首选）
+- `read_wiki_structure` — 文档主题索引
+- `read_wiki_contents` — 完整文档内容
 
 在 Claude Code settings 中添加 DeepWiki MCP server：
 ```json
 {
   "mcpServers": {
     "deepwiki": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/deepwiki-mcp"]
+      "type": "url",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "description": "DeepWiki official MCP server"
     }
   }
 }
