@@ -1,4 +1,4 @@
-# 组件深度分析工作流（增强版）
+# 组件深度分析工作流
 
 PostgreSQL 子系统的完整深度分析，整合所有可用工具。这是主要的工作流。
 
@@ -54,12 +54,33 @@ PostgreSQL 子系统的完整深度分析，整合所有可用工具。这是主
 优先级 2: 头文件
   → 理解数据结构定义和 API 接口
   → 使用 ast_grep_search 快速发现关键类型定义
+  → 特别注意：条件编译宏、路由宏（如 SmgrIsTemp、RelationUsesLocalBuffers）
 
 优先级 3: 核心实现文件
   → 分析关键算法和逻辑
+  → 特别注意：if/switch 分支决策点（决定数据流向的关键分支）
 ```
 
-#### 2.3 增强的代码定位
+#### 2.3 I/O 路径和资源分配追踪（强制）
+
+当分析涉及以下主题时，**必须**追踪完整路径到分支决策点：
+
+| 主题 | 必须追踪到的关键分支点 | 示例 |
+|------|----------------------|------|
+| 缓冲区/缓存 | `ReadBuffer_common` 中的 `isLocalBuf` 分支 | `bufmgr.c:815` |
+| 存储 I/O | `smgr` 层的分发逻辑 | `smgr.c` 中的函数指针表 |
+| 锁/LWLock | 锁类型的获取路径 | 本地缓冲区跳过 LWLock 的代码 |
+| WAL | `RelationNeedsWAL` / `XLogInsert` 的条件判断 | 临时表跳过 WAL |
+| 内存分配 | `MemoryContext` 分配器选择 | `aset.c` vs `mcxt.c` |
+| 进程间通信 | shared memory vs local 的分支 | 进程私有 vs 共享 |
+
+**执行方式**：
+1. 从上层入口函数（如 `ReadBufferExtended`）开始 Read
+2. 逐层追踪到包含条件分支的函数（如 `ReadBuffer_common`）
+3. 记录分支条件和各分支的目标函数
+4. 在文档中标注分支点的文件:行号
+
+#### 2.4 增强的代码定位
 
 结合多种工具高效定位代码：
 
@@ -70,7 +91,7 @@ PostgreSQL 子系统的完整深度分析，整合所有可用工具。这是主
 | 查找宏定义 | `Grep "#define MACRO"` | — |
 | 查找所有引用 | `Grep "SymbolName"` 全目录 | — |
 
-### Step 3: 代码分析（三轨道）
+### Step 3: 代码分析（四轨道）
 
 根据用户选择的关注重点，执行一条或多条分析轨道。
 
@@ -130,6 +151,42 @@ PostgreSQL 子系统的完整深度分析，整合所有可用工具。这是主
 
 5. 输出：算法描述 + 复杂度分析 + 流程图
 
+#### Track D: 负面验证（强制，所有分析必须执行）
+
+**目的**：主动搜索可能推翻分析结论的代码路径，防止无支撑断言混入文档。
+
+```
+执行步骤:
+
+1. 列出分析中的所有关键行为声明
+   示例: "临时表数据经过 shared buffers"
+   示例: "WAL 写入是同步的"
+
+2. 对每个声明，构造反面假设并搜索源码:
+   - 声明 "使用 A 机制" → Grep 搜索 B 机制的存在性
+   - 声明 "经过 X 路径" → Grep 搜索 Y 路径的入口
+   - 声明 "不涉及 Z" → Grep 搜索 Z 相关的关键词
+
+   示例:
+   声明 "临时表经过 shared buffers"
+   → Grep "LocalBuffer" 或 "local_buf" 或 "SmgrIsTemp"
+   → 发现 localbuf.c 文件，追踪发现临时表实际使用本地缓冲区
+   → 修正错误声明
+
+3. 关键搜索模式:
+   | 声明类型 | 负面验证 Grep 模式 |
+   |---------|------------------|
+   | "经过 X 缓存/队列" | 搜索 "Local"、"Private"、"Temp" 相关替代路径 |
+   | "使用 A 锁" | 搜索 B 锁类型、无锁路径 |
+   | "写入 WAL" | 搜索 "skip WAL"、"RelationNeedsWAL" 条件 |
+   | "共享资源" | 搜索进程私有、backend-local 的分配方式 |
+
+4. 如果负面验证发现矛盾:
+   - 必须回到 Step 2 重新追踪该路径
+   - 修正分析结论
+   - 在文档中记录正确的分支行为
+```
+
 ### Step 4: 可视化设计
 
 根据分析内容选择图表类型。SVG 规范详见 `references/svg-conventions.md`。
@@ -146,7 +203,7 @@ PostgreSQL 子系统的完整深度分析，整合所有可用工具。这是主
 
 SVG 保存路径：
 ```
-C:/Users/swrd/Desktop/markdown/postgresql/<主题>/
+C:/Users/用户名/Desktop/markdown/postgresql/<主题>/
   ├── diagram-architecture.svg
   ├── diagram-flow.svg
   ├── struct-<名称>.svg     (如有结构体分析)
@@ -155,7 +212,20 @@ C:/Users/swrd/Desktop/markdown/postgresql/<主题>/
 
 ### Step 5: 文档生成
 
-#### 文档结构
+#### 5.1 源码引用强制规则
+
+**文档中的每一个行为声明必须满足以下条件之一：**
+
+| 声明类型 | 必须引用级别 | 示例 |
+|---------|------------|------|
+| 运行时行为（"经过 X"、"使用 Y"） | **L1**: 实现代码 `src/path:line` | "临时表使用本地缓冲区（`bufmgr.c:815`）" |
+| 数据流向（"数据从 A 到 B"） | **L1**: 分支决策点代码 | "通过 `SmgrIsTemp` 判断路由（`bufmgr.c:815`）" |
+| 设计意图（"为了性能优化"） | **L2**: README 或 SGML 文档 | "见 `storage/buffer/README`" |
+| 外部参考/补充说明 | **L3**: DeepWiki 或社区资料 | 需 L1/L2 二次确认 |
+
+**禁止**：无任何源码引用的行为声明。如果无法找到源码支撑，必须标注为推测。
+
+#### 5.2 文档结构
 
 ```markdown
 # [分析主题]
@@ -181,6 +251,12 @@ C:/Users/swrd/Desktop/markdown/postgresql/<主题>/
 - **功能**: [说明]
 - **调用关系**: caller -> callee
 
+### 关键分支决策点（如适用）
+- **分支条件**: [条件表达式]
+- **源文件**: `src/path/to/file.c:行号`
+- **分支 A**: [描述] → 目标函数
+- **分支 B**: [描述] → 目标函数
+
 ### 调用关系图（如适用）
 ![调用图](callgraph-<函数>.svg)
 
@@ -200,22 +276,22 @@ C:/Users/swrd/Desktop/markdown/postgresql/<主题>/
 
 保存路径：
 ```
-C:/Users/swrd/Desktop/markdown/postgresql/<主题>.md
+C:/Users/用户名/Desktop/markdown/postgresql/<主题>.md
 或
-C:/Users/swrd/Desktop/markdown/postgresql/<主题>/index.md
+C:/Users/用户名/Desktop/markdown/postgresql/<主题>/index.md
 ```
 
-### Step 6: DeepWiki 交叉验证
+### Step 6: DeepWiki 交叉验证（含对抗性验证）
 
 **将分析结论与 DeepWiki (swrd/pg14) 进行交叉验证。**
 
 ```
 验证流程:
 
-1. 通过 ask_question 将关键论点发送给 DeepWiki:
+1. 正面验证 — 将关键论点发送给 DeepWiki:
    mcp__deepwiki__ask_question(
        repoName="swrd/pg14",
-       question="针对分析中的具体论点提问，例如 'BufferDesc 结构体的 freeNext 字段用途是什么？'"
+       question="针对分析中的具体论点提问"
    )
 
 2. 对比验证:
@@ -223,7 +299,16 @@ C:/Users/swrd/Desktop/markdown/postgresql/<主题>/index.md
    - 关键流程是否与 DeepWiki 描述吻合
    - 数据结构关系是否正确
 
-3. 处理差异:
+3. 对抗性验证（新增） — 构造可能否定结论的问题:
+   mcp__deepwiki__ask_question(
+       repoName="swrd/pg14",
+       question="用否定句式提问，例如:
+         'Do temporary tables use LOCAL buffers instead of shared buffers?'
+         'Is there a separate buffer pool for temp relations?'
+         'What conditions cause ReadBuffer_common to choose LocalBufferAlloc?'"
+   )
+
+4. 处理差异:
    - DeepWiki 修正有据 → 更新分析内容
    - DeepWiki 与本地源码冲突 → 以本地源码为准，记录差异
    - 重复验证直到无重大正确性问题
@@ -245,3 +330,10 @@ C:/Users/swrd/Desktop/markdown/postgresql/<主题>/index.md
 - [ ] 工具可用性限制已在文档中标注（如适用）
 - [ ] 文档和 SVG 已保存到正确路径
 - [ ] DeepWiki 交叉验证已完成（关键结论已对比）
+
+**源码证据纪律检查项（v3.2 新增）：**
+- [ ] **行为声明审查**：文档中每个关于运行时行为的声明都有 L1（源码文件:行号）引用
+- [ ] **无裸断言**：没有任何行为声明缺乏源码引用支撑（如有，标注为"推测"或补充引用）
+- [ ] **分支决策点已追踪**：涉及 I/O 路径、资源分配的调用链已追踪到 if/switch 分支点
+- [ ] **负面验证已执行**：对关键结论已搜索可能推翻该结论的替代路径
+- [ ] **引用层级已标注**：文档中区分了 L1（源码）、L2（文档）、L3（外部）引用
