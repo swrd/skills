@@ -102,6 +102,25 @@ ast_grep_search: "$RET $FUNC($$$ARGS) { $$$BODY }", language="c"
 ast_grep_search: "$FUNC($$$ARGS)", language="c"
 ```
 
+#### 3.4 I/O 路径追踪（机制原理型问题强制）
+
+当问题涉及**数据流向、资源分配路径、缓存机制**时，必须追踪调用链到分支决策点：
+
+```
+追踪规则:
+1. 从上层入口函数开始（如 ReadBufferExtended、heap_insert）
+2. 逐层 Read 到包含条件分支的函数
+3. 记录分支条件（宏/条件判断）和各分支目标
+4. 标注分支点的文件:行号
+
+必须追踪的主题:
+- 缓冲区/缓存路径: shared vs local 的分支判断
+- WAL 路径: 需要写 WAL vs 跳过 WAL 的条件
+- 锁路径: LWLock vs 无锁 vs 自旋锁的选择
+- 存储 I/O: smgr 层分发逻辑
+- 内存分配: 不同分配器的选择条件
+```
+
 ### Step 4: 查询 DeepWiki 辅助
 
 使用 DeepWiki MCP 获取 swrd/pg14 仓库的知识作为交叉参考。
@@ -126,7 +145,20 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 
 ### Step 5: 综合回答
 
-#### 5.1 撰写草稿
+#### 5.1 源码引用强制规则
+
+**回答中每个行为声明的引用要求：**
+
+| 声明类型 | 必须引用级别 | 说明 |
+|---------|------------|------|
+| 运行时行为 | **L1**: `src/path/file.c:行号` | 直接引用实现代码 |
+| 数据流向/路径 | **L1**: 分支决策点代码 | 追踪到 if/switch 分支 |
+| 设计意图 | **L2**: README 或 SGML 文档 | 可接受文档引用 |
+| 补充说明 | **L3**: DeepWiki | 需 L1/L2 确认 |
+
+**禁止**：无源码引用的行为声明。无法找到源码支撑时必须标注为推测。
+
+#### 5.2 撰写草稿
 
 基于本地搜索（Step 3）和 DeepWiki 辅助（Step 4）的结果，按以下结构撰写回答：
 
@@ -143,6 +175,16 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 - 包含代码/文档引用，标注本地路径和行号
 - 区分已确认的事实和推论
 - 避免未经检查的源码树或文档支持的建议、传言和版本声明
+- **涉及数据流向的声明必须包含分支决策点的源码引用**
+
+### 关键分支路径（如适用）
+
+<当回答涉及"经过X路径"/"使用Y机制"时，必须展示分支决策逻辑>
+```
+调用链: FuncA -> FuncB -> FuncC
+                                   ↳ if (条件) → 路径X  [src/path/file.c:行号]
+                                   ↳ else      → 路径Y  [src/path/file.c:行号]
+```
 
 ## 实践建议
 
@@ -162,7 +204,7 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 - DeepWiki MCP: `swrd/pg14` 交叉验证
 ```
 
-#### 5.2 综合规则
+#### 5.3 综合规则
 
 - 使用中文撰写（除非用户要求其他语言）
 - 回答必须实用且有源码依据
@@ -177,18 +219,33 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 ```
 验证循环:
 
-1. 将草稿的核心论点通过 ask_question 发送给 DeepWiki:
+1. 正面验证 — 将草稿的核心论点通过 ask_question 发送给 DeepWiki:
    mcp__deepwiki__ask_question(
        repoName="swrd/pg14",
        question="针对草稿中的具体论点提问，例如 'VFD 的 FileAccess 函数是否有三种路径分支？'"
    )
 
-2. 对 DeepWiki 返回的每一条修正:
+2. 对抗性验证（v3.2 新增）— 构造可能否定结论的问题:
+   mcp__deepwiki__ask_question(
+       repoName="swrd/pg14",
+       question="用否定/疑问句式验证关键声明:
+         例1: 声明'临时表使用shared buffers'
+              → 问 'Do temp tables use local buffers instead?'
+         例2: 声明'数据经过X路径'
+              → 问 'Is there an alternative path through Y?'"
+   )
+
+3. 对 DeepWiki 返回的每一条修正:
    - 重新检查本地源码和文档进行确认
    - 如果修正有据可依 → 修订回答
    - 如果修正与本地源码冲突 → 以本地源码为准，记录差异
 
-3. 重复验证循环:
+4. 负面源码验证（v3.2 新增）:
+   - 对每个关键行为声明，Grep 搜索可能推翻该声明的代码
+   - 例: 声明"使用shared buffers" → Grep "LocalBuffer|SmgrIsTemp|local_buf"
+   - 如发现矛盾 → 回到 Step 3 重新追踪，修正结论
+
+5. 重复验证循环:
    - 直到没有重大的正确性问题
    - 或将剩余的不确定性在"边界与版本说明"中明确记录
 
@@ -197,20 +254,21 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 - 函数调用关系和执行流程是否正确
 - 配置参数的默认值和行为是否准确
 - 版本特性说明是否适用于当前源码版本（14.4）
+- I/O 路径和资源分配是否追踪到了分支决策点
 ```
 
 ### Step 7: 保存最终回答
 
 ```
 1. 确保输出目录存在:
-   C:/Users/swrd/Desktop/markdown/postgresql/
+   C:/Users/用户名/Desktop/markdown/postgresql/
 
 2. 生成文件名:
    - 从问题主题派生，使用简洁的文件系统安全名称
    - 示例: mvcc-mechanism.md, wal-guarantee.md, shared-buffers-tuning.md
 
 3. 保存路径:
-   C:/Users/swrd/Desktop/markdown/postgresql/<topic>.md
+   C:/Users/用户名/Desktop/markdown/postgresql/<topic>.md
 
 4. 文件内容:
    - 包含完整的 Step 5 答案格式
@@ -230,14 +288,17 @@ ast_grep_search: "$FUNC($$$ARGS)", language="c"
 | 不浏览网页 | 除非用户明确要求且仍在 PG 核心范围内 |
 | 区分事实与推断 | 回答中明确标注哪些是确认的事实、哪些是推断 |
 | 版本敏感 | 注意当前源码版本（14.4），不要引用更高版本特性 |
+| **行为声明必须有源码引用** | **v3.2 新增：任何运行时行为声明必须附带 L1（src/path:line）引用** |
+| **追踪到分支决策点** | **v3.2 新增：I/O 路径、资源分配类问题必须追踪到 if/switch 分支** |
+| **负面验证** | **v3.2 新增：对关键结论主动搜索可能推翻该结论的代码路径** |
 
 ## 常见问题类型速查
 
-| 问题类型 | 首先搜索 | 然后搜索 | DeepWiki 验证重点 |
-|---------|---------|---------|-----------------|
-| "为什么 XXX 这么慢" | `doc/src/sgml/performance.sgml` | 相关源码模块 README | 性调优建议的准确性 |
-| "XXX 参数什么意思" | `doc/src/sgml/config.sgml` | `src/backend/utils/misc/guc.c` | 参数默认值和适用场景 |
-| "XXX 报错怎么处理" | `doc/src/sgml/errcodes.sgml` | 错误处理相关源码 | 错误恢复流程 |
-| "XXX 和 YYY 区别" | 两者相关的 sgml 文档 | 两者的头文件和实现 | 设计意图和权衡 |
-| "XXX 内部怎么实现" | 组件 README | `src/backend/` + `src/include/` | 架构概述和关键流程 |
-| "如何配置 XXX" | `doc/src/sgml/config.sgml` | GUC 参数定义源码 | 推荐值的适用条件 |
+| 问题类型 | 首先搜索 | 然后搜索 | DeepWiki 验证重点 | 负面验证搜索 |
+|---------|---------|---------|-----------------|-------------|
+| "为什么 XXX 这么慢" | `doc/src/sgml/performance.sgml` | 相关源码模块 README | 性调优建议的准确性 | 替代执行路径 |
+| "XXX 参数什么意思" | `doc/src/sgml/config.sgml` | `src/backend/utils/misc/guc.c` | 参数默认值和适用场景 | 参数的运行时条件分支 |
+| "XXX 报错怎么处理" | `doc/src/sgml/errcodes.sgml` | 错误处理相关源码 | 错误恢复流程 | 其他可能的错误路径 |
+| "XXX 和 YYY 区别" | 两者相关的 sgml 文档 | 两者的头文件和实现 | 设计意图和权衡 | 共享代码路径（可能并非完全不同） |
+| "XXX 内部怎么实现" | 组件 README | `src/backend/` + `src/include/` | 架构概述和关键流程 | 替代实现、条件分支 |
+| "如何配置 XXX" | `doc/src/sgml/config.sgml` | GUC 参数定义源码 | 推荐值的适用条件 | 配置生效的运行时条件 |
